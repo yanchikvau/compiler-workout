@@ -1,0 +1,4 @@
+common.cmo :
+common.cmx :
+test000.cmo : common.cmo
+test000.cmx : common.cmx
