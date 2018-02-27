@@ -41,7 +41,35 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
     *)
-    let eval _ = failwith "Not implemented yet"
+    let int2bool x = x !=0
+    let bool2int x = if x then 1 else 0
+
+    let binop operation left_op right_op =
+        match operation with
+        | "+" -> left_op + right_op
+        | "-" -> left_op - right_op
+        | "*" -> left_op * right_op
+        | "/" -> left_op / right_op
+        | "%" -> left_op mod right_op
+        | "<" -> bool2int (left_op < right_op)
+        | ">" -> bool2int (left_op > right_op)
+        | "<=" -> bool2int (left_op <= right_op)
+        | ">=" -> bool2int (left_op >= right_op)
+        | "==" -> bool2int (left_op == right_op)
+        | "!=" -> bool2int (left_op != right_op)
+        | "&&" -> bool2int (int2bool left_op && int2bool right_op)
+        | "!!" -> bool2int (int2bool left_op || int2bool right_op)
+        | _ -> failwith "Not implemented yet"
+
+  let rec eval state expr = 
+        match expr with
+        | Const c -> c
+        | Var v -> state v
+        | Binop (operation, left_expr, right_expr) ->
+        let left_op = eval state left_expr in
+        let right_op = eval state right_expr in
+        binop operation left_op right_op
+
 
   end
                     
@@ -65,7 +93,15 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let eval _ = failwith "Not implemented yet"
+    let rec eval (state, input, output) stmt = 
+        match stmt with
+        | Assign (x, expr) -> (Expr.update x (Expr.eval state expr) state, input, output)
+        | Read (x) -> 
+              (match input with
+              | z::tail -> (Expr.update x z state, tail, output)
+              | [] -> failwith "Empty input stream")
+        | Write (expr) -> (state, input, output @ [(Expr.eval state expr)])
+        | Seq (frts_stmt, scnd_stmt) -> (eval (eval (state, input, output) frts_stmt ) scnd_stmt)
                                                          
   end
 

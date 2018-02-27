@@ -23,7 +23,28 @@ type config = int list * Syntax.Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                         
-let eval _ = failwith "Not yet implemented"
+let rec eval conf prog =
+	match prog with
+	| [] -> conf
+	|inst::tail -> (
+		match conf, inst with
+		| (y::x::stack, tm_conf), BINOP operation -> 
+			let value = Syntax.Expr.binop operation x y in
+			eval (value::stack, tm_conf) tail
+		| (stack, tm_conf), CONST value ->
+			eval (value::stack, tm_conf) tail
+		| (stack, (st, z::input, output)), READ -> 
+			eval (z::stack, (st, input, output)) tail
+		| (z::stack, (st, input, output)), WRITE -> 
+			eval (stack, (st, input, output @ [z])) tail
+		| (stack, (st, input, output)), LD x -> 
+			let value = st x in
+			eval (value::stack, (st, input, output)) tail
+		| (z::stack, (st, input, output)), ST x -> 
+			let stt = Syntax.Expr.update x z st in
+			eval (stack, (stt, input, output)) tail
+	)
+
 
 (* Top-level evaluation
 
@@ -41,4 +62,15 @@ let run i p = let (_, (_, _, o)) = eval ([], (Syntax.Expr.empty, i, [])) p in o
    stack machine
  *)
 
-let compile _ = failwith "Not yet implemented"
+let rec compileExpr expr = 
+	match expr with
+	| Syntax.Expr.Const c -> [CONST c]
+	| Syntax.Expr.Var x -> [LD x]
+	| Syntax.Expr.Binop (operation, left_op, right_op) -> compileExpr left_op @ compileExpr right_op @ [BINOP operation]
+
+let rec compile st = 
+	match st with
+	| Syntax.Stmt.Assign (x, expr) -> compileExpr expr @ [ST x]
+	| Syntax.Stmt.Read x -> [READ; ST x]
+	| Syntax.Stmt.Write expr -> compileExpr expr @ [WRITE]
+	| Syntax.Stmt.Seq (frts_stmt, scnd_stmt) -> compile frts_stmt @ compile scnd_stmt
