@@ -51,7 +51,7 @@ let _ =
    the given state.
 *)
 (*let eval = failwith "Not implemented yet"*)
-let convert_to_bool value =
+let convert_to_bool value = 
   if value == 0 then false else true
 
 let convert_to_int value =
