@@ -50,5 +50,32 @@ let _ =
    Takes a state and an expression, and returns the value of the expression in 
    the given state.
 *)
-let eval = failwith "Not implemented yet"
-                    
+(*let eval = failwith "Not implemented yet"*)
+let convert_to_bool value =
+  if value == 0 then false else true
+
+let convert_to_int value =
+    if value then 1 else 0
+
+let rec eval status expr = 
+    match expr with
+    | Const const -> const
+    | Var variable -> status variable
+    | Binop (op, left, right) -> 
+      let left_path = eval status left in
+      let right_path = eval status right in
+      match op with
+        | "+"   -> left_path + right_path
+        | "-"   -> left_path - right_path
+        | "*"   -> left_path * right_path
+        | "/"   -> left_path / right_path
+        | "%"   -> left_path mod right_path
+        | "&&"  -> convert_to_int (convert_to_bool left_path && convert_to_bool right_path)
+        | "!!"  -> convert_to_int (convert_to_bool left_path || convert_to_bool right_path)
+        | "<"   -> convert_to_int (left_path < right_path)
+        | "<="  -> convert_to_int (left_path <= right_path)
+        | ">"   -> convert_to_int (left_path > right_path)
+        | ">="  -> convert_to_int (left_path >= right_path)
+        | "=="  -> convert_to_int (left_path == right_path)
+        | "!="  -> convert_to_int (left_path != right_path)
+        | _ -> failwith "Unknown operator"
