@@ -24,7 +24,27 @@ type config = int list * Stmt.config
 
    Takes a configuration and a program, and returns a configuration as a result
  *)                         
-let eval _ = failwith "Not yet implemented"
+let rec eval conf prog =
+        match prog with
+        | [] -> conf
+        |inst::tail -> (
+                match conf, inst with
+                | (y::x::stack, tm_conf), BINOP operation -> 
+                        let value = Language.Expr.binop operation x y in
+                        eval (value::stack, tm_conf) tail
+                | (stack, tm_conf), CONST value ->
+                        eval (value::stack, tm_conf) tail
+				| (stack, (st, z::input, output)), READ -> 
+                        eval (z::stack, (st, input, output)) tail
+                | (z::stack, (st, input, output)), WRITE -> 
+                        eval (stack, (st, input, output @ [z])) tail
+				| (stack, (st, input, output)), LD x -> 
+                        let value = st x in
+                        eval (value::stack, (st, input, output)) tail
+                        | (z::stack, (st, input, output)), ST x -> 
+						let stt = Language.Expr.update x z st in
+                        eval (stack, (stt, input, output)) tail
+)
 
 (* Top-level evaluation
 
@@ -41,4 +61,16 @@ let run p i = let (_, (_, _, o)) = eval ([], (Language.Expr.empty, i, [])) p in 
    Takes a program in the source language and returns an equivalent program for the
    stack machine
  *)
-let compile _ = failwith "Not yet implemented"
+let rec compileExpr expr = 
+        match expr with
+        | Language.Expr.Const c -> [CONST c]
+        | Language.Expr.Var x -> [LD x]
+        | Language.Expr.Binop (operation, left_op, right_op) -> compileExpr left_op @ compileExpr right_op @ [BINOP operation]
+
+
+let rec compile st = 
+        match st with
+        | Language.Stmt.Assign (x, expr) -> compileExpr expr @ [ST x]
+        | Language.Stmt.Read x -> [READ; ST x]
+        | Language.Stmt.Write expr -> compileExpr expr @ [WRITE]
+		| Language.Stmt.Seq (frts_stmt, scnd_stmt) -> compile frts_stmt @ compile scnd_stmt
