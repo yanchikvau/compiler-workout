@@ -44,31 +44,35 @@ module Expr =
        Takes a state and an expression, and returns the value of the expression in 
        the given state.
      *)                                                       
-    let to_func op =
-      let bti   = function true -> 1 | _ -> 0 in
-      let itb b = b <> 0 in
-      let (|>) f g   = fun x y -> f (g x y) in
-      match op with
-      | "+"  -> (+)
-      | "-"  -> (-)
-      | "*"  -> ( * )
-      | "/"  -> (/)
-      | "%"  -> (mod)
-      | "<"  -> bti |> (< )
-      | "<=" -> bti |> (<=)
-      | ">"  -> bti |> (> )
-      | ">=" -> bti |> (>=)
-      | "==" -> bti |> (= )
-      | "!=" -> bti |> (<>)
-      | "&&" -> fun x y -> bti (itb x && itb y)
-      | "!!" -> fun x y -> bti (itb x || itb y)
-      | _    -> failwith (Printf.sprintf "Unknown binary operator %s" op)    
-    
-    let rec eval st expr =      
-      match expr with
-      | Const n -> n
-      | Var   x -> st x
-      | Binop (op, x, y) -> to_func op (eval st x) (eval st y)
+    let int2bool x = x !=0
+    let bool2int x = if x then 1 else 0
+
+    let binop operation left_op right_op =
+        match operation with
+        | "+" -> left_op + right_op
+        | "-" -> left_op - right_op
+        | "*" -> left_op * right_op
+        | "/" -> left_op / right_op
+        | "%" -> left_op mod right_op
+        | "<" -> bool2int (left_op < right_op)
+        | ">" -> bool2int (left_op > right_op)
+        | "<=" -> bool2int (left_op <= right_op)
+        | ">=" -> bool2int (left_op >= right_op)
+        | "==" -> bool2int (left_op == right_op)
+        | "!=" -> bool2int (left_op != right_op)
+        | "&&" -> bool2int (int2bool left_op && int2bool right_op)
+        | "!!" -> bool2int (int2bool left_op || int2bool right_op)
+        | _ -> failwith "Not implemented yet"
+  
+
+    let rec eval state expr = 
+        match expr with
+        | Const c -> c
+        | Var v -> state v
+        | Binop (operation, left_expr, right_expr) ->
+        let left_op = eval state left_expr in
+        let right_op = eval state right_expr in
+        binop operation left_op right_op
 
     (* Expression parser. You can use the following terminals:
 
@@ -76,27 +80,22 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string
                                                                                                                   
     *)
+    let binop_transforming binoplist = List.map (fun op -> ostap($(op)), (fun left_op right_op -> Binop (op, left_op, right_op))) binoplist
     ostap (                                      
       parse:
-	  !(Ostap.Util.expr 
-             (fun x -> x)
-	     (Array.map (fun (a, s) -> a, 
-                           List.map  (fun s -> ostap(- $(s)), (fun x y -> Binop (s, x, y))) s
-                        ) 
-              [|                
-		`Lefta, ["!!"];
-		`Lefta, ["&&"];
-		`Nona , ["=="; "!="; "<="; "<"; ">="; ">"];
-		`Lefta, ["+" ; "-"];
-		`Lefta, ["*" ; "/"; "%"];
-              |] 
-	     )
-	     primary);
-      
-      primary:
-        n:DECIMAL {Const n}
-      | x:IDENT   {Var x}
-      | -"(" parse -")"
+	       !(Ostap.Util.expr
+          (fun x -> x)
+          [|
+            `Lefta, binop_transforming ["!!"];
+            `Lefta, binop_transforming ["&&"];
+            `Nona,  binop_transforming [">="; ">"; "<="; "<"; "=="; "!="];
+            `Lefta, binop_transforming ["+"; "-"];
+            `Lefta, binop_transforming ["*"; "/"; "%"]
+          |]
+  
+        primary
+        );
+        primary: x:IDENT {Var x} | c:DECIMAL {Const c} | -"(" parse -")"
     )
     
   end
@@ -121,22 +120,25 @@ module Stmt =
 
        Takes a configuration and a statement, and returns another configuration
     *)
-    let rec eval ((st, i, o) as conf) stmt =
-      match stmt with
-      | Read    x       -> (match i with z::i' -> (Expr.update x z st, i', o) | _ -> failwith "Unexpected end of input")
-      | Write   e       -> (st, i, o @ [Expr.eval st e])
-      | Assign (x, e)   -> (Expr.update x (Expr.eval st e) st, i, o)
-      | Seq    (s1, s2) -> eval (eval conf s1) s2
+    let rec eval (state, input, output) stmt = 
+        match stmt with
+        | Assign (x, expr) -> (Expr.update x (Expr.eval state expr) state, input, output)
+        | Read (x) -> 
+                (match input with
+                | z::tail -> (Expr.update x z state, tail, output)
+                | [] -> failwith "Empty input stream")
+        | Write (expr) -> (state, input, output @ [(Expr.eval state expr)])
+        | Seq (frts_stmt, scnd_stmt) -> (eval (eval (state, input, output) frts_stmt ) scnd_stmt)
                                 
     (* Statement parser *)
     ostap (
-      parse:
-        s:stmt ";" ss:parse {Seq (s, ss)}
-      | stmt;
-      stmt:
-        "read" "(" x:IDENT ")"          {Read x}
-      | "write" "(" e:!(Expr.parse) ")" {Write e}
-      | x:IDENT ":=" e:!(Expr.parse)    {Assign (x, e)}            
+      parse: seq | stmt;
+      stmt: assign | read | write;
+      assign: x:IDENT -":=" expr:!(Expr.parse) {Assign (x, expr)};
+      read: -"read" -"(" x:IDENT -")" {Read x};
+      write: -"write" -"("expr:!(Expr.parse) -")" {Write expr};
+      seq: frts_stmt:stmt -";" scnd_stmt:parse {Seq (frts_stmt, scnd_stmt)} 
+              
     )
       
   end

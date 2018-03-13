@@ -80,7 +80,91 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let compare_op cop =
+    match cop with
+    | "<" -> "l"
+    | ">" -> "g"
+    | "<=" -> "le"
+    | ">=" -> "ge"
+    | "==" -> "e"
+    | "!=" -> "ne"
+
+let rec compile env code = 
+        let compile_eval env asm = 
+                match asm with
+                | CONST n -> 
+                        let e, env = env#allocate in 
+                        env, [Mov (L n, e)]
+                | WRITE -> 
+                        let e, env = env#pop in 
+                        env, [Push e; Call "Lwrite"; Pop eax]
+                | LD x -> 
+                        let e, env = (env#global x)#allocate in 
+                        env, [Mov (M (env#loc x), eax); Mov (eax, e)] 
+                | ST x -> 
+                        let e, env = (env#global x)#pop in 
+                        env, [Mov (e, eax); Mov (eax, M (env#loc x))]     
+                | READ -> 
+                        let e, env = env#allocate in 
+                        env, [Call "Lread"; Mov (eax, e)]
+                 
+                | BINOP operation -> 
+                        let sx, sy, env = env#pop2 in 
+                        let e, env = env#allocate in 
+                        env, match operation with
+                        | "+" | "-" | "*" -> 
+                                [
+                                  Mov (sy, eax); 
+                                  Binop (operation, sx, eax); 
+                                  Mov (eax, sy)
+                                ]
+                        | "/" -> 
+                                [
+                                  Mov (sy, eax); 
+                                  Cltd; 
+                                  IDiv sx; 
+                                  Mov (eax, e)
+                          ]
+                        | "%" -> 
+                                [
+                                  Mov (sy, eax); 
+                                  Cltd; 
+                                  IDiv sx; 
+                                  Mov (edx, e)
+                                ]     
+        
+                        | "<" | ">" | "<=" | ">=" | "==" | "!=" ->
+                            let cop = compare_op operation in
+                                [
+                                  Mov (sy, eax);
+                                  Binop ("cmp", sx, eax);
+                                  Mov (eax, sy)] @ [Mov (L 0, eax);
+                                  Set (cop, "%al");
+                                  Mov (eax, e)
+                                ]
+        
+                        | "&&" | "!!" -> 
+                                [
+                                  Binop ("^", eax, eax); 
+                                  Binop ("^", edx, edx);
+                                                Binop ("cmp", L 0, sx); 
+                                  Set ("nz", "%al"); 
+                                                Binop ("cmp", L 0, sy); 
+                                  Set ("nz", "%dl"); 
+                                                Binop (operation, eax, edx); 
+                                  Mov (edx, e)
+                                ]
+
+                        | _ -> failwith "Unknown binary operator" in
+        
+    
+                match code with
+                | [] -> env, []
+                | instr::t_code ->
+                          let n_env , asm = compile_eval env instr in
+                          let next_env, asm_list = compile n_env t_code in 
+                          next_env, asm @ asm_list
+
 
 (* A set of strings *)           
 module S = Set.Make (String)
