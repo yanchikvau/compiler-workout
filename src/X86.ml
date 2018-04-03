@@ -86,7 +86,80 @@ open SM
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code = failwith "Not yet implemented"
+let rec compile env code = 
+        match code with
+        | [] -> env, []
+        | instr::code' ->
+          let env', asm = 
+          match instr with
+          | CONST n -> 
+                let s, env = env#allocate in 
+                env, [Mov (L n, s)]
+          | WRITE -> 
+                let s, env = env#pop in 
+                env, [Push s; Call "Lwrite"; Pop eax]
+          | LD x -> 
+                let s, env = (env#global x)#allocate in 
+                env, [Mov (M (env#loc x), eax); Mov (eax, s)] 
+          | ST x -> 
+                let s, env = (env#global x)#pop in 
+                env, [Mov (s, eax); Mov (eax, M (env#loc x))]     
+          | READ -> 
+                let s, env = env#allocate in 
+                env, [Call "Lread"; Mov (eax, s)]
+          | LABEL l -> env, [Label l]
+          | JMP l -> env, [Jmp l]
+          | CJMP (c, l) -> let o, env = env#pop in env, [Binop ("cmp", L 0, o); CJmp (c, l)]
+     
+          | BINOP oper -> 
+                          let sx, sy, env = env#pop2 in 
+                          let s, env = env#allocate in 
+                          env, match oper with
+                          | "+" | "-" | "*" -> 
+                                  [
+                                    Mov (sy, eax); 
+                                    Binop (oper, sx, eax); 
+                                    Mov (eax, sy)
+                                  ]
+                          | "/" -> 
+                                  [
+                                    Mov (sy, eax); 
+                                    Cltd; 
+                                    IDiv sx; 
+                                    Mov (eax, s)
+                                  ]
+                          | "%" -> 
+                                  [
+                                    Mov (sy, eax); 
+                                    Cltd; 
+                                    IDiv sx; 
+                                    Mov (edx, s)
+                                  ]     
+                            
+                          | ">" ->  [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("g", "%al");  Mov (eax, s)]
+                          | ">=" -> [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("ge", "%al"); Mov (eax, s)]
+                          | "<" ->  [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("l", "%al");  Mov (eax, s)]
+                          | "<=" -> [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("le", "%al"); Mov (eax, s)]
+                          | "==" -> [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("e", "%al");  Mov (eax, s)]
+                          | "!=" -> [Mov (sy, eax); Binop ("cmp", sx, eax); Mov (eax, sy)] @ [Mov (L 0, eax); Set ("ne", "%al"); Mov (eax, s)]  
+                          | "&&" | "!!" -> 
+                                  [
+                                    Binop ("^", eax, eax); 
+                                    Binop ("^", edx, edx);
+                                                  Binop ("cmp", L 0, sx); 
+                                    Set ("nz", "%al"); 
+                                                  Binop ("cmp", L 0, sy); 
+                                    Set ("nz", "%dl"); 
+                                                  Binop (oper, eax, edx); 
+                                    Mov (edx, s)
+                                  ]
+                          | _ -> failwith "Unknown binary operator" 
+
+      
+          in let env, asm' = compile env' code' in
+          (env, asm @ asm');;
+
+
 
 (* A set of strings *)           
 module S = Set.Make (String)
