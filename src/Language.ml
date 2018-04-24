@@ -74,7 +74,50 @@ module Expr =
        which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
        an returns resulting configuration
     *)                                                       
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
+let int_to_bool value = 
+      if value == 0 then false else true
+    let bool_to_int value = 
+      if value then 1 else 0
+
+    let binop operation left_operand right_operand = 
+      match operation with
+      | "+"   -> left_operand + right_operand
+      | "-"   -> left_operand - right_operand
+      | "*"   -> left_operand * right_operand
+      | "/"   -> left_operand / right_operand
+      | "%"   -> left_operand mod right_operand
+      | "&&"  -> bool_to_int (int_to_bool left_operand && int_to_bool right_operand)
+      | "!!"  -> bool_to_int (int_to_bool left_operand || int_to_bool right_operand)
+      | "<" -> bool_to_int (left_operand < right_operand)
+      | "<="  -> bool_to_int (left_operand <= right_operand)
+      | ">" -> bool_to_int (left_operand > right_operand)
+      | ">="  -> bool_to_int (left_operand >= right_operand)
+      | "=="  -> bool_to_int (left_operand == right_operand)
+      | "!="  -> bool_to_int (left_operand != right_operand)
+      | _ -> failwith("Undefined operator!")
+
+    let rec eval env ((st, i, o, r) as conf) expr = 
+      match expr with
+    | Const const -> (st, i, o, Some const)
+    | Var variable -> 
+      let value = State.eval st variable in
+      (st, i, o, Some value)
+    | Binop (operation, left, right) ->
+      let (st', i', o', Some l) as conf' = eval env conf left in
+      let (st', i', o', Some r) = eval env conf' right in
+      let value = binop operation l r in 
+      (st', i', o', Some value)
+    | Call (name, args) ->
+      let rec evalArgs env conf args =
+        match args with
+        | expr::args' ->
+          let (st', i', o', Some eval_arg) as conf' = eval env conf expr in
+          let eval_args', conf' = evalArgs env conf' args' in 
+          eval_arg::eval_args', conf'
+        |[] -> [], conf  
+      in
+      let eval_args, conf' = evalArgs env conf args in
+      env#definition env name eval_args conf'
          
     (* Expression parser. You can use the following terminals:
 
@@ -82,7 +125,23 @@ module Expr =
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
     ostap (                                      
-      parse: empty {failwith "Not implemented"}
+      parse: 
+      !(Ostap.Util.expr
+          (fun x -> x)
+          [|
+            `Lefta, mapoperation ["!!"];
+            `Lefta, mapoperation ["&&"];
+            `Nona,  mapoperation ["=="; "!=";">="; ">"; "<="; "<"];
+            `Lefta, mapoperation ["+"; "-"];
+            `Lefta, mapoperation ["*"; "/"; "%"];
+          |]
+          primary
+        );
+      primary: 
+      x:IDENT "(" args:!(Util.list0)[parse] ")" {Call (x, args)}
+        | variable:IDENT {Var variable} 
+        | const:DECIMAL {Const const} 
+        | -"(" parse -")"
     )
     
   end
@@ -100,7 +159,7 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) | Repeat of t * Expr.t
+    (* loop with a post-condition       *) | Repeat of Expr.t * t
     (* return statement                 *) | Return of Expr.t option
     (* call a procedure                 *) | Call   of string * Expr.t list with show
                                                                     
@@ -111,11 +170,94 @@ module Stmt =
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemnted"
+let rec eval env conf k stmt =
+      let romb stmt k =
+        if k = Skip then stmt
+        else Seq (stmt, k) in
+      match conf, stmt with
+      | (st, input, output, r) , Assign (variable, expr) -> 
+        let (st', i', o', Some value) = Expr.eval env conf expr in
+        eval env (State.update variable value st', i', o', r) Skip k
+      | (st, z::input, output, r), Read variable ->
+        eval env (State.update variable z st, input, output, r) Skip k
+      | (st, input, output, r), Write expr ->
+        let (st', i', o', Some value) = Expr.eval env conf expr in
+        eval env (st', i', o' @ [value], r) Skip k
+      | conf, Seq (left_stmt, right_stmt) ->
+        eval env conf (romb right_stmt k) left_stmt
+      | conf, Skip -> 
+        if k = Skip then conf
+        else eval env conf Skip k
+      | (st, input, output, r), If (expr, th, el) ->
+        let (st', i', o', Some value) as conf' = Expr.eval env conf expr in
+        let if_answer value = if value == 0 then el else th in
+        eval env conf' k (if_answer value)
+      | conf, While (expr, while_stmt) ->
+        let (st', i', o', Some value) as conf' = Expr.eval env conf expr in
+        if value == 0 then eval env conf' Skip k
+        else eval env conf' (romb stmt k) while_stmt
+      | conf, Repeat (expr, repeat_stmt) ->
+        eval env conf (romb (While(Expr.Binop("==",expr, Expr.Const 0), repeat_stmt)) k) repeat_stmt
+      | (st, input, output, r), Call (name, args) ->
+      let rec evalArgs env conf args =
+        match args with
+        | expr::args' ->
+          let (st', i', o', Some eval_arg) = Expr.eval env conf expr in
+          let eval_args', conf' = evalArgs env (st', i', o', Some eval_arg) args' in 
+          eval_arg::eval_args', conf'
+        |[] -> [], conf  in
+      let eval_args, conf' = evalArgs env conf args in
+      let conf'' = env#definition env name eval_args conf' in
+      eval env conf'' Skip k
+    | (st, input, output, r), Return expr -> (
+        match expr with
+        | None -> (st, input, output, None)
+        | Some expr -> Expr.eval env conf expr
+      )
+      | _, _ -> failwith("Undefined statement!")
          
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse: 
+      seq | stmt;
+  
+      stmt:
+          read | write | assign | skip | repeat_stmt | while_stmt | if_stmt | for_stmt | call | ret;
+
+      assign: 
+      variable:IDENT -":=" expr:!(Expr.parse) {Assign (variable, expr)};
+    read: 
+      %"read" -"(" variable:IDENT -")" {Read variable};
+    write: 
+      %"write" -"(" expr:!(Expr.parse) -")" {Write expr};
+    skip: 
+      %"skip" {Skip};
+    if_stmt: 
+      %"if" expr:!(Expr.parse) %"then"
+      if_true:parse 
+      if_false:else_stmt %"fi" {If (expr, if_true, if_false)};
+    else_stmt:  
+        %"else" if_false:parse {if_false} 
+        | %"elif" expr:!(Expr.parse) %"then"
+          if_true:parse 
+          if_false:else_stmt {If (expr, if_true, if_false)}
+        | "" {Skip};
+    while_stmt:
+      %"while" expr:!(Expr.parse) %"do"
+      while_body:parse
+      %"od" {While (expr, while_body)};
+    repeat_stmt:
+      %"repeat" 
+      repeat_body:parse 
+      %"until" expr:!(Expr.parse) {Repeat (expr, repeat_body)};
+    for_stmt:
+      %"for" init:parse -"," expr:!(Expr.parse) -"," loop:parse %"do"
+      for_body:parse
+      %"od" { Seq (init, While(expr, Seq (for_body, loop))) };
+    call: x:IDENT "(" args:!(Util.list0)[Expr.parse] ")" {Call (x, args)};
+    ret: %"return" expr:!(Expr.parse)? { Return expr};
+    seq: 
+      left_stmt:stmt -";" right_stmt:parse {Seq (left_stmt, right_stmt)} 
     )
       
   end
@@ -127,8 +269,13 @@ module Definition =
     (* The type for a definition: name, argument list, local variables, body *)
     type t = string * (string list * string list * Stmt.t)
 
-    ostap (     
-      parse: empty {failwith "Not implemented"}
+    ostap (
+      arg  : IDENT;
+      parse: %"fun" name:IDENT "(" args:!(Util.list0 arg) ")"
+         locs:(%"local" !(Util.list arg))?
+        "{" body:!(Stmt.parse) "}" {
+        (name, (args, (match locs with None -> [] | Some l -> l), body))
+      }
     )
 
   end
