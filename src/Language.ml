@@ -30,7 +30,10 @@ module Value =
     let of_array  a = Array  a
 
     let update_string s i x = String.init (String.length s) (fun j -> if j = i then x else s.[j])
-    let update_array  a i x = List.init   (List.length a)   (fun j -> if j = i then x else List.nth a j)
+    let rec enum i count func =
+    if i < count then (func i) :: (enum (i + 1) count func)
+    else []
+    let update_array  a i x = enum 0 (List.length a)   (fun j -> if j = i then x else List.nth a j)
 
   end
        
@@ -115,38 +118,104 @@ module Expr =
     type config = State.t * int list * int list * Value.t option
                                                             
     (* Expression evaluator
-
           val eval : env -> config -> t -> int * config
-
-
        Takes an environment, a configuration and an expresion, and returns another configuration. The 
        environment supplies the following method
-
            method definition : env -> string -> int list -> config -> config
-
        which takes an environment (of the same type), a name of the function, a list of actual parameters and a configuration, 
        an returns a pair: the return value for the call and the resulting configuration
     *)                                                       
-    let rec eval env ((st, i, o, r) as conf) expr = failwith "Not implemented"
-    and eval_list env conf xs =
-      let vs, (st, i, o, _) =
-        List.fold_left
-          (fun (acc, conf) x ->
-             let (_, _, _, Some v) as conf = eval env conf x in
-             v::acc, conf
-          )
-          ([], conf)
-          xs
-      in
-      (st, i, o, List.rev vs)
-         
-    (* Expression parser. You can use the following terminals:
+    let convert_to_bool value =
+      if value == 0 then false else true
 
+    let convert_to_int value =
+      if value then 1 else 0
+
+    let binop op left_path right_path = 
+    match op with
+        | "+"   -> left_path + right_path
+        | "-"   -> left_path - right_path
+        | "*"   -> left_path * right_path
+        | "/"   -> left_path / right_path
+        | "%"   -> left_path mod right_path
+        | "&&"  -> convert_to_int (convert_to_bool left_path && convert_to_bool right_path)
+        | "!!"  -> convert_to_int (convert_to_bool left_path || convert_to_bool right_path)
+        | "<"   -> convert_to_int (left_path < right_path)
+        | "<="  -> convert_to_int (left_path <= right_path)
+        | ">"   -> convert_to_int (left_path > right_path)
+        | ">="  -> convert_to_int (left_path >= right_path)
+        | "=="  -> convert_to_int (left_path == right_path)
+        | "!="  -> convert_to_int (left_path != right_path)
+        | _ -> failwith "Unknown operator"
+        
+
+    let rec eval env ((status, i, o, r) as conf) expr = 
+      match expr with
+      | Const (const) -> (status, i, o, Some (Value.of_int const)) 
+      | Array (elems) -> let (status, i, o, ret_values) = eval_list env conf elems in env#definition env "$array" ret_values (status, i, o, None)
+      | String (str) -> (status, i, o, Some (Value.of_string str))
+      | Var (variable) -> (status, i, o, Some (State.eval status variable))
+      | Binop (op, left, right) -> 
+        let (_, _, _, Some left_path) as conf' = eval env conf left in
+        let (status', i', o', Some right_path) = eval env conf' right in
+        (status', i', o', Some (Value.of_int (binop op (Value.to_int left_path) (Value.to_int right_path))))
+      | Elem (a, indx) -> 
+        let (_, _, _, Some value_a) as conf = eval env conf a in 
+        let (_, _, _, Some value_indx) as conf = eval env conf indx in 
+        env#definition env "$elem" [value_a; value_indx] (status, i, o, None)
+      | Length a -> 
+        let (status, i, o, Some value_a) = eval env conf a in 
+        env#definition env "$length" [value_a] (status, i, o, None)  
+      | Call (name, args) ->  
+        let (conf', st_args) = List.fold_left 
+                  (fun (conf, res_list) expr -> let (_, _, _, Some value) as conf' = eval env conf expr in (conf', res_list @ [value]))
+                  (conf, [])
+                  args in
+        env#definition env name st_args conf' 
+      and eval_list env conf xs =
+        let vs, (st, i, o, _) =
+          List.fold_left
+            (fun (acc, conf) x ->
+              let (_, _, _, Some v) as conf = eval env conf x in
+              v::acc, conf
+            )
+            ([], conf)
+            xs
+        in
+        (st, i, o, List.rev vs)   
+    (* Expression parser. You can use the following terminals:
          IDENT   --- a non-empty identifier a-zA-Z[a-zA-Z0-9_]* as a string
          DECIMAL --- a decimal constant [0-9]+ as a string                                                                                                                  
     *)
-    ostap (                                      
-      parse: empty {failwith "Not implemented"}
+    let listop ops =
+      List.map (fun op -> ostap($(op)), fun left right -> Binop (op, left, right)) ops
+
+    ostap (
+      parse: 
+        !(Util.expr
+          (fun x -> x)
+          [|
+            `Lefta, listop ["!!"];
+            `Lefta, listop ["&&"];
+            `Nona,  listop ["=="; "!=";">="; ">"; "<="; "<"];
+            `Lefta, listop ["+"; "-"];
+            `Lefta, listop ["*"; "/"; "%"];
+          |]
+          primary
+        );
+      primary: 
+        e:expr action:(
+        -"[" i:parse -"]" {`Elem i} 
+        | -"." %"length" {`Len}
+      ) * {List.fold_left (fun x -> function `Elem i -> Elem (x, i) | `Len -> Length x) e action};  
+      expr:
+        name : IDENT "(" args:!(Util.list0)[parse] ")" {Call (name, args)}
+        | variable: IDENT {Var (variable)}
+        | const: DECIMAL {Const (const)}
+        | str:STRING {String (String.sub str 1 (String.length str - 2))}
+        | ch:CHAR {Const (Char.code ch)}
+        | -"[" elements:!(Util.list0)[parse] -"]" {Array elements}
+        | -"(" parse -")"
     )
     
   end
@@ -162,14 +231,12 @@ module Stmt =
     (* empty statement                  *) | Skip
     (* conditional                      *) | If     of Expr.t * t * t
     (* loop with a pre-condition        *) | While  of Expr.t * t
-    (* loop with a post-condition       *) | Repeat of t * Expr.t
+    (* loop with a post-condition       *) | DoWhile of Expr.t * t
     (* return statement                 *) | Return of Expr.t option
     (* call a procedure                 *) | Call   of string * Expr.t list
                                                                     
     (* Statement evaluator
-
          val eval : env -> config -> t -> config
-
        Takes an environment, a configuration and a statement, and returns another configuration. The 
        environment is the same as for expressions
     *)
@@ -186,11 +253,64 @@ module Stmt =
       in
       State.update x (match is with [] -> v | _ -> update (State.eval st x) v is) st
           
-    let rec eval env ((st, i, o, r) as conf) k stmt = failwith "Not implemented"
-         
+    let sequence first second =
+    match second with
+    | Skip -> first
+    | second -> Seq (first, second)
+
+    let rec eval env cnfg k stmt = 
+    match cnfg, stmt with
+    | (s, i, o, r), Assign (variable, indexes, expr) -> 
+      let (s', i', o', indx) = Expr.eval_list env cnfg indexes in
+      let (s', i', o', Some value) = Expr.eval env (s', i', o', None) expr in
+      eval env (update s' variable value indx, i', o', None) Skip k
+    | cnfg, Seq (left, right) -> eval env cnfg (sequence right k) left
+    | cnfg, Skip -> 
+      (match k with
+      | Skip -> cnfg
+      | k -> eval env cnfg Skip k
+      )
+    | (s, i, o, r), If (expr, at, aels) -> 
+      let (s',i',o', Some value) as cnfg' = Expr.eval env cnfg expr in
+      if Value.to_int value == 0 then eval env cnfg' k aels
+      else eval env cnfg' k at
+    | (s, i, o, r), While (expr, body) -> 
+      let (s',i',o', Some value) as cnfg' = Expr.eval env cnfg expr in
+      if Value.to_int value == 0 then eval env cnfg' Skip k
+      else eval env cnfg' (sequence stmt k) body
+    | (s, i, o, r), DoWhile (expr, body) -> eval env cnfg (sequence (While (Expr.Binop("==", expr, Expr.Const 0), body)) k) body
+    | cnfg, Call (name, args) ->
+      let (cnfg', st_args) = List.fold_left 
+                  (fun (cnfg, res_list) expr -> let (_, _, _, Some value) as cnfg' = Expr.eval env cnfg expr in (cnfg', res_list @ [value]))
+                  (cnfg, [])
+                  args in
+      let cnfg'' = env#definition env name st_args cnfg' in eval env cnfg'' Skip k
+    | (s, i, o, r), Return (expr) -> 
+      (
+      match expr with
+      | None -> (s, i, o, None)
+      | Some expr -> Expr.eval env cnfg expr
+      )
+    | _, _ -> failwith("Unknown operator")
+
     (* Statement parser *)
     ostap (
-      parse: empty {failwith "Not implemented"}
+      parse: 
+        left_stmt:stmt -";" right_stmt:parse {Seq (left_stmt, right_stmt)} | stmt;
+      stmt: 
+        variable:IDENT indx:(-"[" !(Expr.parse) -"]") * -":=" expr:!(Expr.parse) {Assign (variable, indx, expr)}
+        | %"skip" {Skip}
+        | %"while" expr:!(Expr.parse) %"do" body:parse %"od" {While (expr, body)}
+        | %"repeat" body:parse %"until" expr:!(Expr.parse) {DoWhile (expr, body)}
+        | %"for" init:parse -"," expr:!(Expr.parse) -"," loopexpr:parse %"do" body:parse %"od" {Seq (init, While (expr, Seq (body, loopexpr)))}
+        | %"if" expr:!(Expr.parse) %"then" at:parse aels:else_body %"fi" {If (expr, at, aels)}
+        | name : IDENT "(" args:!(Util.list0)[Expr.parse] ")" {Call (name, args)}
+        | %"return" expr:!(Expr.parse)? {Return (expr)}; 
+      else_body:
+        %"else" aels:parse {aels}
+        | %"elif" expr:!(Expr.parse) %"then" at:parse aels:else_body {If (expr, at, aels)}
+        | "" {Skip}
+
     )
       
   end
@@ -219,9 +339,7 @@ module Definition =
 type t = Definition.t list * Stmt.t    
 
 (* Top-level evaluator
-
      eval : t -> int list -> int list
-
    Takes a program and its input stream, and returns the output stream
 *)
 let eval (defs, body) i =

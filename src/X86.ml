@@ -84,30 +84,120 @@ let show instr =
 open SM
 
 (* Symbolic stack machine evaluator
-
      compile : env -> prg -> env * instr list
-
    Take an environment, a stack machine program, and returns a pair --- the updated environment and the list
    of x86 instructions
 *)
-let compile env code =
-  let suffix = function
-  | "<"  -> "l"
+let replace a b =  
+  match a, b with
+  | R _ , _ | _, R _ -> [Mov (a, b)]
+  | _, _ -> [Mov (a, eax); Mov (eax, b)]
+
+let binop operation a b = 
+  match a, b with
+  | R _ , _ | _, R _ -> [Binop (operation, b, a)]
+  | _, _ -> [Mov (a, eax); Binop (operation, b, eax); Mov (eax, a)]
+
+let type_div operation =
+  match operation with
+  | "/" -> eax
+  | "%" -> edx
+  | _ -> failwith("Unknown type division")
+
+let suffix operation = 
+  match operation with
+  | "<" -> "l"
+  | ">" -> "g"
   | "<=" -> "le"
+  | ">=" -> "ge"
   | "==" -> "e"
   | "!=" -> "ne"
-  | ">=" -> "ge"
-  | ">"  -> "g"
-  | _    -> failwith "unknown operator"	
-  in
-  let rec compile' env scode = failwith "Not implemented" in
-  compile' env code
+  | _ -> failwith("Unknown operation")
+
+
+let rec compile env = function 
+  | [] -> env, []
+  | instr::code' -> 
+    let env, asm =
+      match instr with
+      | CONST n -> 
+        let s, env = env#allocate in
+        env, [Mov (L n, s)]
+      | LD x ->
+        let s, env = (env#global x)#allocate in
+        (
+        match s with
+        | S _ | M _ -> env, [Mov (env#loc x, eax); Mov (eax, s)]
+        | _         -> env, [Mov (env#loc x, s)]
+        )
+      | ST x ->
+        let s, env = (env#global x)#pop in
+        (
+        match s with
+        | S _ | M _ -> env, [Mov (s, eax); Mov (eax, env#loc x)]
+        | _         -> env, [Mov (s, env#loc x)]
+        )
+      | LABEL label -> env, [Label label]
+      | JMP label -> env, [Jmp label]
+      | CJMP (suf, label) -> 
+        let s, env = env#pop in
+        env, [Mov (s, eax); Binop ("cmp", L 0, eax); CJmp (suf, label)] 
+      | BINOP operation ->
+        let op_r, op_l, env = env#pop2 in
+        let res, env = env#allocate in
+        (
+        match operation with
+        | "+" | "-" | "*" -> 
+          env, (binop operation op_l op_r) @ replace op_l res
+        | "/" | "%"->
+          env, [Mov (op_l, eax); Cltd; IDiv op_r; Mov (type_div operation, res)]
+        | "&&" | "!!" ->
+          env, [  Binop ("^", eax, eax); Binop ("cmp", L 0, op_l); Set ("nz", "%al"); 
+              Binop ("^", edx, edx); Binop ("cmp", L 0, op_r); Set ("nz", "%dl"); 
+              Binop (operation, eax, edx); Mov (edx, res)]
+        | "<" | ">" | "<=" | ">=" | "==" | "!=" ->
+          env, [Mov (op_l, eax); Binop ("^", edx, edx); Binop ("cmp", op_r, eax); Set (suffix operation, "%dl"); Mov (edx, res)]
+        )
+      | BEGIN (name, args, locals) ->
+        let env = env#enter name args locals in
+        env, [Push ebp; Mov (esp, ebp); Binop ("-", M ("$" ^ env#lsize), esp)]
+      | END -> env, [Label env#epilogue; Mov (ebp, esp); Pop ebp; Ret; Meta (Printf.sprintf "\t.set %s, %d" env#lsize (env#allocated * word_size))]
+      | RET r ->
+       (
+        match r with
+        | true -> let x, env = env#pop in env, [Mov (x, eax); Jmp env#epilogue]
+        | false -> env, [Jmp env#epilogue]
+       )
+      | CALL  (name, count, isFunction) ->
+        let pushr, popr = List.split (List.map(fun r -> (Push r, Pop r)) env#live_registers) in
+          let env, code = 
+            (
+            match count with
+            | 0 -> env, pushr @ [Call name] @ (List.rev popr)
+            | n -> 
+              let rec pargs env arr c = 
+                match c with
+                | 0 -> env, arr
+                | n -> let x, env = env#pop in pargs env ((Push x)::arr) (n-1)
+              in let env, pusha = pargs env [] n in
+              env, pushr @ pusha @ [Call name; Binop ("+", L (n*word_size), esp)] @ (List.rev popr)
+            )
+          in
+          if isFunction then 
+            env, code 
+          else 
+            let y, env = env#allocate in env, code @ [Mov (eax, y)] 
+    in let env, asm' = compile env code' in
+      env, asm @ asm'
 
 (* A set of strings *)           
 module S = Set.Make (String)
 
 (* Environment implementation *)
-let make_assoc l = List.combine l (List.init (List.length l) (fun x -> x))
+let rec enum i count func =
+    if i < count then (func i) :: (enum (i + 1) count func)
+    else []
+let make_assoc l = List.combine l (enum 0 (List.length l) (fun x -> x))
                      
 class env =
   object (self)
@@ -196,4 +286,3 @@ let build prog name =
   close_out outf;
   let inc = try Sys.getenv "RC_RUNTIME" with _ -> "../runtime" in
   Sys.command (Printf.sprintf "gcc -m32 -o %s %s/runtime.o %s.s" name inc name)
- 
