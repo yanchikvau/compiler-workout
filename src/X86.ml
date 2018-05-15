@@ -1,4 +1,4 @@
-* X86 codegeneration interface *)
+(* X86 codegeneration interface *)
 
 (* The registers: *)
 let regs = [|"%ebx"; "%ecx"; "%esi"; "%edi"; "%eax"; "%edx"; "%ebp"; "%esp"|]
